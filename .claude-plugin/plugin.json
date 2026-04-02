@@ -1,0 +1,21 @@
+{
+  "name": "askrally",
+  "version": "1.0.0",
+  "displayName": "AskRally",
+  "description": "Persona-based audience research via Rally's API. Query calibrated synthetic personas for authentic consumer insights, messaging feedback, and audience reactions.",
+  "author": {
+    "name": "Rally",
+    "url": "https://askrally.com"
+  },
+  "homepage": "https://askrally.com",
+  "repository": "https://github.com/IrrealityLabs/askrally-plugin",
+  "license": "MIT",
+  "keywords": [
+    "audience-research",
+    "personas",
+    "consumer-insights",
+    "marketing",
+    "focus-groups",
+    "askrally"
+  ]
+}

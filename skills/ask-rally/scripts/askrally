@@ -1,0 +1,491 @@
+#!/usr/bin/env python3
+"""askrally — CLI for the AskRally persona-based audience research API.
+
+Wraps https://api.askrally.com/api/v1 so Claude Code skills (or humans)
+can query synthetic personas, manage audiences, and review sessions
+without leaving the terminal.
+
+Requires ASKRALLY_API_KEY environment variable.
+"""
+
+import argparse
+import json
+import os
+import sys
+import textwrap
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import datetime
+
+BASE_URL = "https://api.askrally.com/api/v1"
+
+# ─── helpers ────────────────────────────────────────────────────────────────
+
+def get_api_key():
+    key = os.environ.get("ASKRALLY_API_KEY")
+    if key:
+        return key
+    # Try .env in cwd
+    env_path = os.path.join(os.getcwd(), ".env")
+    if os.path.exists(env_path):
+        with open(env_path) as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("ASKRALLY_API_KEY="):
+                    return line.split("=", 1)[1].strip().strip('"').strip("'")
+    print("Error: ASKRALLY_API_KEY not set. Export it or add to .env", file=sys.stderr)
+    sys.exit(1)
+
+
+def api(method, path, data=None, params=None):
+    """Make an authenticated request to the Rally API."""
+    url = BASE_URL + path
+    if params:
+        url += "?" + urllib.parse.urlencode({k: v for k, v in params.items() if v is not None})
+
+    body = json.dumps(data).encode() if data else None
+    req = urllib.request.Request(url, data=body, method=method)
+    req.add_header("Authorization", f"Bearer {get_api_key()}")
+    req.add_header("Content-Type", "application/json")
+    req.add_header("Accept", "application/json")
+
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        body_text = e.read().decode()
+        try:
+            err = json.loads(body_text)
+            print(f"API error {e.code}: {err.get('message', body_text)}", file=sys.stderr)
+            if err.get("details"):
+                print(f"  Details: {json.dumps(err['details'])}", file=sys.stderr)
+        except json.JSONDecodeError:
+            print(f"API error {e.code}: {body_text}", file=sys.stderr)
+        sys.exit(1)
+    except urllib.error.URLError as e:
+        print(f"Connection error: {e.reason}", file=sys.stderr)
+        sys.exit(1)
+
+
+def fmt_date(iso_str):
+    if not iso_str:
+        return ""
+    try:
+        dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+        return dt.strftime("%Y-%m-%d %H:%M")
+    except (ValueError, AttributeError):
+        return str(iso_str)[:16]
+
+
+def wrap(text, width=88, indent=""):
+    """Wrap text preserving paragraph breaks."""
+    paragraphs = text.split("\n\n")
+    wrapped = []
+    for p in paragraphs:
+        lines = textwrap.fill(p.strip(), width=width, initial_indent=indent, subsequent_indent=indent)
+        wrapped.append(lines)
+    return "\n\n".join(wrapped)
+
+
+# ─── commands ───────────────────────────────────────────────────────────────
+
+def cmd_me(args):
+    """Show authenticated user info."""
+    data = api("GET", "/auth/me")
+    if args.json:
+        print(json.dumps(data, indent=2))
+        return
+    print(f"User:     {data.get('email', 'unknown')}")
+    print(f"ID:       {data.get('id', '')}")
+    print(f"Admin:    {data.get('is_admin', False)}")
+    print(f"Waitlist: {data.get('waitlist', False)}")
+
+
+def cmd_audiences(args):
+    """List audiences."""
+    params = {"limit": args.limit, "page": args.page}
+    data = api("GET", "/audiences", params=params)
+
+    if args.json:
+        print(json.dumps(data, indent=2))
+        return
+
+    all_audiences = data.get("user_audiences", []) + data.get("base_audiences", [])
+
+    # Client-side search filter
+    if args.search:
+        q = args.search.lower()
+        all_audiences = [a for a in all_audiences if q in a.get("name", "").lower()
+                         or q in a.get("description", "").lower()]
+
+    if not all_audiences:
+        print("No audiences found.")
+        return
+
+    pagination = data.get("pagination", {})
+    total = pagination.get("total_items", len(all_audiences))
+    print(f"Audiences ({len(all_audiences)} shown, {total} total):\n")
+    print(f"  {'ID':<20} {'Name':<45} {'Personas':>8}")
+    print(f"  {'─'*20} {'─'*45} {'─'*8}")
+    for a in all_audiences:
+        name = a.get("name", "unnamed")
+        if len(name) > 44:
+            name = name[:41] + "..."
+        persona_count = len(a.get("personas", []))
+        aid = a.get("id", "")
+        archived = " [archived]" if a.get("archived") else ""
+        print(f"  {aid:<20} {name + archived:<45} {persona_count:>8}")
+
+
+def cmd_audience(args):
+    """Get audience details."""
+    data = api("GET", f"/audiences/{args.audience_id}")
+
+    if args.json:
+        print(json.dumps(data, indent=2))
+        return
+
+    print(f"Audience: {data.get('name', 'unnamed')}")
+    print(f"ID:       {data.get('id', '')}")
+    print(f"Archived: {data.get('archived', False)}")
+    desc = data.get("description", "")
+    if desc:
+        print(f"Description: {desc}")
+    print()
+
+    personas = data.get("personas", [])
+    print(f"Personas ({len(personas)}):\n")
+    print(f"  {'ID':<20} {'Name':<25} {'Age':>4} {'Gender':<8} {'Occupation':<25} {'Location'}")
+    print(f"  {'─'*20} {'─'*25} {'─'*4} {'─'*8} {'─'*25} {'─'*20}")
+    for p in personas:
+        name = p.get("name", "unnamed")
+        if len(name) > 24:
+            name = name[:21] + "..."
+        occ = p.get("occupation", "")
+        if len(occ) > 24:
+            occ = occ[:21] + "..."
+        print(f"  {p.get('id',''):<20} {name:<25} {p.get('age',''):>4} {p.get('gender',''):<8} {occ:<25} {p.get('location','')}")
+
+
+def cmd_chat(args):
+    """Chat with an audience."""
+    payload = {"query": args.query}
+
+    if args.audience:
+        payload["audience_id"] = args.audience
+    if args.session:
+        payload["session_id"] = args.session
+    if args.sample_size:
+        payload["sample_size"] = args.sample_size
+    if args.persona_ids:
+        payload["persona_ids"] = args.persona_ids.split(",")
+    if args.smart:
+        payload["mode"] = "smart"
+        payload["smart"] = True
+    else:
+        payload["mode"] = args.mode or "fast"
+        payload["smart"] = False
+    if args.voting:
+        payload["voting_mode"] = True
+    if args.no_summary:
+        payload["summary_type"] = "no_summary"
+    if args.search_query:
+        payload["search_query"] = args.search_query
+    if args.search_pool:
+        payload["search_pool"] = args.search_pool
+    if args.system_prompt:
+        payload["system_prompt"] = args.system_prompt
+
+    # Demographic filters
+    filters = {}
+    if args.filter_age_min is not None:
+        filters["age_min"] = args.filter_age_min
+    if args.filter_age_max is not None:
+        filters["age_max"] = args.filter_age_max
+    if args.filter_gender:
+        filters["gender"] = args.filter_gender.split(",")
+    if args.filter_location:
+        filters["location"] = args.filter_location
+    if args.filter_occupation:
+        filters["occupation"] = args.filter_occupation
+    if args.filter_income:
+        filters["income"] = args.filter_income.split(",")
+    if filters:
+        payload["filters"] = filters
+
+    # Manual memories
+    if args.memory:
+        payload["manual_memories"] = [{"content": m} for m in args.memory]
+
+    data = api("POST", "/chat", data=payload)
+
+    if args.json:
+        print(json.dumps(data, indent=2))
+        return
+
+    # Header
+    meta = data.get("metadata", {})
+    session_id = data.get("session_id", "")
+    audience_name = meta.get("audience_name", "unknown")
+    responding = meta.get("responding_personas", 0)
+    total = meta.get("total_personas", 0)
+    mode = data.get("mode", "fast")
+    provider = data.get("provider", "")
+
+    print(f"Session:  {session_id}")
+    print(f"Audience: {audience_name} ({responding} of {total} personas)")
+    print(f"Mode:     {mode} | Provider: {provider}")
+    if data.get("voting_mode"):
+        print("Voting:   enabled")
+    print()
+
+    # Responses
+    for r in data.get("responses", []):
+        name = r.get("name", r.get("persona_id", "unknown"))
+        pid = r.get("persona_id", "")
+        print(f"--- {name} ({pid}) ---")
+        response_text = r.get("response", "")
+        print(wrap(response_text))
+        if r.get("vote"):
+            print(f"  Vote: {r['vote']}")
+        search = r.get("search")
+        if search:
+            print(f"  [rank={search.get('rank_score',0):.2f} semantic={search.get('semantic_score',0):.2f} exact={search.get('is_exact',False)}]")
+        print()
+
+    # Summary
+    summary = data.get("summary")
+    if summary:
+        print("=== Summary ===")
+        print(wrap(summary))
+        print()
+
+    # Session hint for follow-ups
+    print(f"[session_id: {session_id} — use --session {session_id} for follow-ups]")
+
+
+def cmd_sessions(args):
+    """List sessions."""
+    params = {"limit": args.limit, "page": args.page}
+    data = api("GET", "/sessions", params=params)
+
+    if args.json:
+        print(json.dumps(data, indent=2))
+        return
+
+    items = data.get("items", [])
+    meta = data.get("metadata", {})
+    total = meta.get("total_items", len(items))
+    print(f"Sessions ({len(items)} shown, {total} total):\n")
+    print(f"  {'ID':<20} {'Title':<40} {'Messages':>8}  {'Updated'}")
+    print(f"  {'─'*20} {'─'*40} {'─'*8}  {'─'*16}")
+    for s in items:
+        title = s.get("title") or "(untitled)"
+        if len(title) > 39:
+            title = title[:36] + "..."
+        print(f"  {s.get('id',''):<20} {title:<40} {s.get('message_count',0):>8}  {fmt_date(s.get('updated',''))}")
+
+
+def cmd_session(args):
+    """Get session details."""
+    data = api("GET", f"/sessions/{args.session_id}")
+
+    if args.json:
+        print(json.dumps(data, indent=2))
+        return
+
+    print(f"Session:  {data.get('id','')}")
+    print(f"Title:    {data.get('title','(untitled)')}")
+    print(f"Audience: {data.get('audience_id','unknown')}")
+    print(f"Smart:    {data.get('smart', False)}")
+    print(f"Provider: {data.get('provider','')}")
+    print(f"Created:  {fmt_date(data.get('created',''))}")
+    print()
+
+    messages = data.get("messages", [])
+    for i, msg in enumerate(messages):
+        if msg.get("is_manual_memory"):
+            print(f"  [{i}] (manual memory)")
+            continue
+        print(f"  [{i}] Query: {msg.get('query','')}")
+        responses = msg.get("responses", [])
+        print(f"      Responses: {len(responses)} personas")
+        for r in responses:
+            name = r.get("name", r.get("persona_id", ""))
+            text = r.get("response", "")
+            preview = text[:120].replace("\n", " ") + ("..." if len(text) > 120 else "")
+            print(f"        - {name}: {preview}")
+        summary = msg.get("summary")
+        if summary:
+            preview = summary[:150].replace("\n", " ") + ("..." if len(summary) > 150 else "")
+            print(f"      Summary: {preview}")
+        print()
+
+
+def cmd_summarize(args):
+    """Generate a custom summary for a session."""
+    payload = {
+        "custom_prompt": args.prompt,
+        "mode": args.mode or "fast",
+    }
+    if args.provider:
+        payload["provider"] = args.provider
+
+    data = api("POST", f"/chat/{args.session_id}/summarize", data=payload)
+
+    if args.json:
+        print(json.dumps(data, indent=2))
+        return
+
+    print(f"Session:  {data.get('session_id','')}")
+    print(f"Prompt:   {data.get('custom_prompt','')}")
+    print()
+    print("=== Custom Summary ===")
+    print(wrap(data.get("summary", "")))
+
+
+def cmd_resample(args):
+    """Add more personas to an existing message."""
+    payload = {
+        "session_id": args.session_id,
+        "message_index": args.message_index,
+        "sample_size": args.sample_size,
+    }
+    data = api("POST", "/chat/resample", data=payload)
+
+    if args.json:
+        print(json.dumps(data, indent=2))
+        return
+
+    # Response is a V1ChatResponse
+    meta = data.get("metadata", {})
+    print(f"Session:  {data.get('session_id','')}")
+    print(f"Added {meta.get('responding_personas',0)} new persona responses\n")
+
+    for r in data.get("responses", []):
+        name = r.get("name", r.get("persona_id", "unknown"))
+        pid = r.get("persona_id", "")
+        print(f"--- {name} ({pid}) ---")
+        print(wrap(r.get("response", "")))
+        print()
+
+    summary = data.get("summary")
+    if summary:
+        print("=== Updated Summary ===")
+        print(wrap(summary))
+
+
+def cmd_branch(args):
+    """Branch an existing session at a given message index."""
+    payload = {
+        "session_id": args.session_id,
+        "message_index": args.message_index,
+    }
+    data = api("POST", "/sessions/branch", data=payload)
+
+    if args.json:
+        print(json.dumps(data, indent=2))
+        return
+
+    print(f"Branched session: {data.get('session_id','')}")
+    print(f"  From: {args.session_id} at message index {args.message_index}")
+
+
+# ─── main ───────────────────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="askrally",
+        description="CLI for the AskRally persona-based audience research API",
+    )
+    # Shared --json flag available on every subcommand
+    json_parent = argparse.ArgumentParser(add_help=False)
+    json_parent.add_argument("--json", action="store_true", help="Output raw JSON")
+
+    sub = parser.add_subparsers(dest="command", help="Available commands")
+
+    # me
+    sub.add_parser("me", parents=[json_parent], help="Show current user info")
+
+    # audiences
+    p = sub.add_parser("audiences", parents=[json_parent], help="List audiences")
+    p.add_argument("--search", help="Filter audiences by name/description (client-side)")
+    p.add_argument("--limit", type=int, default=100, help="Max results (default: 100)")
+    p.add_argument("--page", type=int, default=1, help="Page number")
+
+    # audience
+    p = sub.add_parser("audience", parents=[json_parent], help="Get audience details with persona list")
+    p.add_argument("audience_id", help="Audience ID")
+
+    # chat
+    p = sub.add_parser("chat", parents=[json_parent], help="Chat with an audience's personas")
+    p.add_argument("query", help="The question to ask the personas")
+    p.add_argument("--audience", "-a", help="Audience ID")
+    p.add_argument("--session", "-s", help="Session ID for follow-up questions")
+    p.add_argument("--sample-size", "-n", type=int, help="Number of personas to sample")
+    p.add_argument("--persona-ids", help="Comma-separated persona IDs for manual selection")
+    p.add_argument("--mode", choices=["fast", "smart"], help="Chat mode (default: fast)")
+    p.add_argument("--smart", action="store_true", help="Use smart mode (enhanced reasoning)")
+    p.add_argument("--voting", action="store_true", help="Enable voting mode")
+    p.add_argument("--no-summary", action="store_true", help="Skip summary generation")
+    p.add_argument("--search-query", help="Semantic search query for persona selection")
+    p.add_argument("--search-pool", choices=["audience", "genpop"], help="Where to search")
+    p.add_argument("--system-prompt", help="Override default persona system prompt")
+    p.add_argument("--filter-age-min", type=int, help="Minimum age filter")
+    p.add_argument("--filter-age-max", type=int, help="Maximum age filter")
+    p.add_argument("--filter-gender", help="Gender filter (comma-separated)")
+    p.add_argument("--filter-location", help="Location filter (partial match)")
+    p.add_argument("--filter-occupation", help="Occupation filter (partial match)")
+    p.add_argument("--filter-income", help="Income bracket filter (comma-separated)")
+    p.add_argument("--memory", action="append", help="Inject manual memory/context (repeatable)")
+
+    # sessions
+    p = sub.add_parser("sessions", parents=[json_parent], help="List chat sessions")
+    p.add_argument("--limit", type=int, default=20, help="Max results")
+    p.add_argument("--page", type=int, default=1, help="Page number")
+
+    # session
+    p = sub.add_parser("session", parents=[json_parent], help="Get session details with full message history")
+    p.add_argument("session_id", help="Session ID")
+
+    # summarize
+    p = sub.add_parser("summarize", parents=[json_parent], help="Generate a custom summary for a session")
+    p.add_argument("session_id", help="Session ID")
+    p.add_argument("prompt", help="Custom summarization instructions")
+    p.add_argument("--mode", choices=["fast", "smart"], help="Processing mode")
+    p.add_argument("--provider", choices=["openai", "anthropic", "google", "groq"], help="LLM provider")
+
+    # resample
+    p = sub.add_parser("resample", parents=[json_parent], help="Add more persona responses to a message")
+    p.add_argument("session_id", help="Session ID")
+    p.add_argument("--message-index", "-m", type=int, required=True, help="Message index (0-based)")
+    p.add_argument("--sample-size", "-n", type=int, required=True, help="Number of personas to add")
+
+    # branch
+    p = sub.add_parser("branch", parents=[json_parent], help="Branch a session at a given message")
+    p.add_argument("session_id", help="Session ID to branch from")
+    p.add_argument("--message-index", "-m", type=int, required=True, help="Branch point (0-based)")
+
+    args = parser.parse_args()
+
+    if not args.command:
+        parser.print_help()
+        sys.exit(1)
+
+    dispatch = {
+        "me": cmd_me,
+        "audiences": cmd_audiences,
+        "audience": cmd_audience,
+        "chat": cmd_chat,
+        "sessions": cmd_sessions,
+        "session": cmd_session,
+        "summarize": cmd_summarize,
+        "resample": cmd_resample,
+        "branch": cmd_branch,
+    }
+    dispatch[args.command](args)
+
+
+if __name__ == "__main__":
+    main()
