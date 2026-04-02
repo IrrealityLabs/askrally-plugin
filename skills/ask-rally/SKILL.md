@@ -64,7 +64,25 @@ If no audience was specified, choose a sensible default:
 
 To create a new audience, direct the user to https://app.askrally.com.
 
-### Step 3: Send the query
+### Step 3: Design the research
+
+Before sending anything to the API, think about what the user actually wants to learn and how best to get a useful answer from personas. The user's question as written may not be the best thing to ask a persona directly.
+
+**Ask yourself:**
+
+1. **Is this a comparison question?** ("Do women like X more than men?", "How do millennials vs boomers feel about...") If so, don't ask the comparison question directly — personas can only speak for themselves. Instead, split into separate queries with demographic filters or targeted sampling, then compare the results yourself. For example, "Do women like cake more than men?" becomes two calls — one asking 5 women "How do you feel about cake?" and one asking 5 men the same — followed by your own comparative analysis.
+
+2. **Is the question leading or biased?** ("Don't you think X is bad?") Rephrase to be neutral so personas give honest reactions rather than agreeing with a premise.
+
+3. **Would the question make sense to a real person?** Personas respond as themselves — they don't have access to population-level data. Asking "What percentage of people prefer X?" won't work. Instead, ask about their personal experience and preferences, then you synthesize the patterns.
+
+4. **Does it need multiple rounds?** Some questions benefit from a warm-up question followed by the real one, or from asking the same panel a sequence of probing questions within a session.
+
+5. **Is a straight pass-through fine?** Many questions work great as-is: "What do you think about electric scooters?", "Would you pay $50/month for this?", "What's your biggest frustration with grocery shopping?" If the question is open-ended and asks for personal opinion, just send it directly.
+
+**After designing your approach, briefly tell the user your plan before executing.** For example: "I'll ask 5 women and 5 men separately how they feel about cake, then compare their responses." This takes one sentence — don't over-explain.
+
+### Step 4: Send the query (or queries)
 
 Build and run the chat command:
 
@@ -85,11 +103,13 @@ The API returns persona responses and a summary in one call. No subagents needed
 
 **Timeout note:** Large panels (10+ personas) can take 30-60 seconds. Set a generous Bash timeout (120000ms).
 
-### Step 4: Present the results
+### Step 5: Present the results and analyze
 
-The CLI outputs formatted text with persona responses and a summary. Present it to the user with light reformatting:
+**If you ran a single query**, present each persona response, then the API-generated summary.
 
-**For each persona response:**
+**If you ran multiple queries** (e.g., split by demographic), present each group's responses separately, then write your own comparative analysis. The API summaries cover each group individually — your job is the cross-group synthesis that answers the user's original question. This is where the real value is.
+
+**Format:**
 ```
 ---
 ### [Name], [persona_id]
@@ -97,19 +117,17 @@ The CLI outputs formatted text with persona responses and a summary. Present it 
 ---
 ```
 
-**Then the summary:**
+Then summary or analysis:
 ```
 ---
-## Summary
-[The API-generated summary]
+## Summary / Analysis
+[Synthesis here]
 ---
 ```
 
-If the summary feels thin or the user would benefit from a different angle, offer a custom summary (Step 5a). Otherwise, move to Step 6.
+### Step 6: Post-query actions (optional, offer when relevant)
 
-### Step 5: Post-query actions (optional, offer when relevant)
-
-#### 5a: Custom summary
+#### 6a: Custom summary
 
 If the user wants a different take on the responses:
 
@@ -117,7 +135,7 @@ If the user wants a different take on the responses:
 python3 ${CLAUDE_SKILL_DIR}/scripts/askrally summarize SESSION_ID "Pick out the best quotes for marketing copy"
 ```
 
-#### 5b: Add more personas (resample)
+#### 6b: Add more personas (resample)
 
 If 5 personas wasn't enough signal:
 
@@ -125,7 +143,7 @@ If 5 personas wasn't enough signal:
 python3 ${CLAUDE_SKILL_DIR}/scripts/askrally resample SESSION_ID --message-index 0 --sample-size 5
 ```
 
-#### 5c: Follow-up question
+#### 6c: Follow-up question
 
 Continue the conversation with the same panel:
 
@@ -135,7 +153,7 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/askrally chat "Follow-up question" --session
 
 The session preserves conversation history so personas remember previous questions.
 
-### Step 6: Offer next steps
+### Step 7: Offer next steps
 
 After presenting results, briefly mention what the user can do next:
 
