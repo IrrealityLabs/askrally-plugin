@@ -6,6 +6,14 @@ Query calibrated AI personas through Rally's API. Ask a question, get authentic 
 
 ### 1. Install the plugin
 
+From inside Claude Code:
+
+```
+/plugin install askrally@askrally
+```
+
+Or from the terminal:
+
 ```bash
 claude plugin marketplace add IrrealityLabs/askrally-plugin
 claude plugin install askrally
