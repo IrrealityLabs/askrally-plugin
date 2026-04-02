@@ -1,6 +1,6 @@
 {
   "name": "askrally",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "displayName": "AskRally",
   "description": "Persona-based audience research via Rally's API. Query calibrated synthetic personas for authentic consumer insights, messaging feedback, and audience reactions.",
   "author": {
